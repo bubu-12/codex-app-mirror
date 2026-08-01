@@ -1,0 +1,24 @@
+name: Sync upstream
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 */6 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream-main
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    if: github.repository == 'bubu-12/codex-app-mirror'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Merge upstream default branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh api --method POST "repos/$GH_REPO/merge-upstream" -f branch=main
