@@ -5,6 +5,7 @@ const SHORT_CACHE_CONTROL = "public, max-age=600";
 const DEFAULT_STAGE_PREFIX = "staging/secondary-sync";
 const ALIAS_ROLLBACK_SUFFIX = ".rollback";
 const DEFAULT_PRUNE_GRACE_DAYS = 1;
+const DEFAULT_STAGE_GRACE_HOURS = 2;
 
 export class NonRetryableMirrorError extends Error {
   constructor(message) {
@@ -606,6 +607,47 @@ export async function pruneStaleLatestMacObjects(env, keepKeys, options = {}) {
   return { pruned, graceDays };
 }
 
+export async function pruneAbandonedStageObjects(env, keepStagePrefix = "", options = {}) {
+  const s3 = createS3Client(env);
+  const stageRoot = `${cleanPrefix(env.SECONDARY_SYNC_STAGE_PREFIX || DEFAULT_STAGE_PREFIX)}/`;
+  const graceHours = parseNonNegativeInteger(
+    options.graceHours ?? env.SECONDARY_SYNC_STAGE_GRACE_HOURS,
+    DEFAULT_STAGE_GRACE_HOURS,
+  );
+  const cutoff = Date.now() - graceHours * 60 * 60 * 1000;
+  const deleted = [];
+  const aborted = [];
+
+  for (const object of await s3.listObjects(stageRoot)) {
+    if (!isAbandonedStageEntry(object.key, object.lastModified, keepStagePrefix, cutoff)) {
+      continue;
+    }
+    await s3.deleteObject(object.key);
+    deleted.push(object.key);
+  }
+
+  for (const upload of await s3.listMultipartUploads(stageRoot)) {
+    if (!isAbandonedStageEntry(upload.key, upload.initiated, keepStagePrefix, cutoff)) {
+      continue;
+    }
+    await s3.abortMultipartUpload(upload.key, upload.uploadId);
+    aborted.push({ key: upload.key, uploadId: upload.uploadId });
+  }
+
+  return { deleted, aborted, graceHours };
+}
+
+function isAbandonedStageEntry(key, timestamp, keepStagePrefix, cutoff) {
+  if (!key || !timestamp || Number.isNaN(timestamp.getTime())) {
+    return false;
+  }
+  const keepPrefix = cleanPrefix(keepStagePrefix);
+  if (keepPrefix && (key === keepPrefix || key.startsWith(`${keepPrefix}/`))) {
+    return false;
+  }
+  return timestamp.getTime() < cutoff;
+}
+
 export function decoratePlanWithStage(plan, instanceId, env = {}) {
   const safeTag = safeKeySegment(plan.releaseTag);
   const safeInstance = safeKeySegment(instanceId);
@@ -850,6 +892,35 @@ export class S3Client {
     }
     await assertOk(response, "DELETE", `${key}?uploadId=${uploadId}`);
     return response;
+  }
+
+  async listMultipartUploads(prefix) {
+    const uploads = [];
+    let keyMarker = "";
+    let uploadIdMarker = "";
+    do {
+      const query = [
+        ["uploads", ""],
+        ["prefix", prefix],
+      ];
+      if (keyMarker) {
+        query.push(["key-marker", keyMarker]);
+      }
+      if (uploadIdMarker) {
+        query.push(["upload-id-marker", uploadIdMarker]);
+      }
+      const response = await this.request({
+        method: "GET",
+        key: "",
+        query,
+      });
+      await assertOk(response, "LIST MULTIPART", prefix);
+      const xml = await response.text();
+      uploads.push(...xmlMultipartUploads(xml));
+      keyMarker = xmlText(xml, "NextKeyMarker");
+      uploadIdMarker = xmlText(xml, "NextUploadIdMarker");
+    } while (keyMarker);
+    return uploads;
   }
 
   async copyObject(sourceKey, destinationKey) {
@@ -1232,6 +1303,26 @@ function xmlContents(xml) {
       key,
       size: Number.parseInt(xmlText(block, "Size") || "0", 10),
       lastModified: parseHttpDate(xmlText(block, "LastModified")),
+    });
+  }
+  return entries;
+}
+
+function xmlMultipartUploads(xml) {
+  const entries = [];
+  const uploadRegex = /<Upload>([\s\S]*?)<\/Upload>/g;
+  let match;
+  while ((match = uploadRegex.exec(xml))) {
+    const block = match[1];
+    const key = xmlText(block, "Key");
+    const uploadId = xmlText(block, "UploadId");
+    if (!key || !uploadId) {
+      continue;
+    }
+    entries.push({
+      key,
+      uploadId,
+      initiated: parseHttpDate(xmlText(block, "Initiated")),
     });
   }
   return entries;

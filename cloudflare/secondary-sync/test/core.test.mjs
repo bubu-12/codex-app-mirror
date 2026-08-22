@@ -8,6 +8,7 @@ import {
   deleteStaleAliasObjects,
   decoratePlanWithStage,
   deriveReleaseTag,
+  pruneAbandonedStageObjects,
   pruneStaleLatestMacObjects,
   uploadObjectToStage,
 } from "../src/core.js";
@@ -188,6 +189,45 @@ test("prunes stale unreferenced Sparkle archives but keeps current and recent ob
   assert.equal(s3.objects.has("latest/mac/intel/recent.zip"), true);
 });
 
+test("prunes abandoned staging objects and multipart uploads without touching active work", async () => {
+  const s3 = createMockS3();
+  const old = new Date("2020-01-01T00:00:00Z");
+  const recent = new Date(Date.now() + 60_000);
+  const activePrefix = "staging/secondary-sync/release/active";
+  s3.objects.set("staging/secondary-sync/release/old/objects/archive", objectEntry("old", old));
+  s3.objects.set("staging/secondary-sync/release/recent/objects/archive", objectEntry("recent", recent));
+  s3.objects.set(`${activePrefix}/objects/archive`, objectEntry("active", old));
+  s3.objects.set("latest/win", objectEntry("published", old));
+  s3.uploads.set("upload-old", {
+    key: "staging/secondary-sync/release/old/objects/partial",
+    parts: new Map(),
+    initiated: old,
+  });
+  s3.uploads.set("upload-active", {
+    key: `${activePrefix}/objects/partial`,
+    parts: new Map(),
+    initiated: old,
+  });
+  globalThis.fetch = s3.fetch;
+
+  const result = await pruneAbandonedStageObjects(fixtureEnv(new Map()), activePrefix, {
+    graceHours: 1,
+  });
+
+  assert.deepEqual(result.deleted, ["staging/secondary-sync/release/old/objects/archive"]);
+  assert.deepEqual(result.aborted, [
+    {
+      key: "staging/secondary-sync/release/old/objects/partial",
+      uploadId: "upload-old",
+    },
+  ]);
+  assert.equal(s3.objects.has("staging/secondary-sync/release/recent/objects/archive"), true);
+  assert.equal(s3.objects.has(`${activePrefix}/objects/archive`), true);
+  assert.equal(s3.objects.has("latest/win"), true);
+  assert.equal(s3.uploads.has("upload-old"), false);
+  assert.equal(s3.uploads.has("upload-active"), true);
+});
+
 test("falls back to ListObjectsV2 when nested HEAD returns 403", async () => {
   const s3 = createMockS3();
   globalThis.fetch = s3.fetch;
@@ -354,6 +394,20 @@ function createMockS3(options = {}) {
       return new Response(`<ListBucketResult>${contents}</ListBucketResult>`, { status: 200 });
     }
 
+    if (method === "GET" && url.searchParams.has("uploads")) {
+      const prefix = url.searchParams.get("prefix") || "";
+      const entries = [...uploads.entries()]
+        .filter(([, upload]) => upload.key.startsWith(prefix))
+        .map(
+          ([uploadId, upload]) =>
+            `<Upload><Key>${xmlEscape(upload.key)}</Key><UploadId>${xmlEscape(uploadId)}</UploadId><Initiated>${upload.initiated.toISOString()}</Initiated></Upload>`,
+        )
+        .join("");
+      return new Response(`<ListMultipartUploadsResult>${entries}</ListMultipartUploadsResult>`, {
+        status: 200,
+      });
+    }
+
     if (method === "HEAD") {
       if (key.includes("head-403")) {
         return new Response("forbidden", { status: 403 });
@@ -385,7 +439,7 @@ function createMockS3(options = {}) {
 
     if (method === "POST" && url.searchParams.has("uploads")) {
       const uploadId = `upload-${++uploadCounter}`;
-      uploads.set(uploadId, { key, parts: new Map() });
+      uploads.set(uploadId, { key, parts: new Map(), initiated: new Date() });
       return new Response(`<InitiateMultipartUploadResult><UploadId>${uploadId}</UploadId></InitiateMultipartUploadResult>`);
     }
 
