@@ -6,7 +6,37 @@
   "vars": {
     "GLOBAL_MIRROR_BASE_URL": "https://codexapp-r2.agentsmirror.com",
     "SECONDARY_COUNTRY_CODES": "CN",
-    "SECONDARY_S3_SIGNED_URL_TTL_SECONDS": "3600",
+    "SECONDARY_S3_SIGNED_URL_TTL_SECONDS": "600",
+    "SECONDARY_S3_METADATA_TTL_SECONDS": "120",
+    "ANALYTICS_EXTENDED_BLOBS": "1",
+    "BLOCK_MODE": "enforce",
+    "TERMS_HOME_URL": "https://codexapp.agentsmirror.com/",
+    "TERMS_URL": "https://codexapp.agentsmirror.com/terms/",
+    "SOURCE_REPO_URL": "https://github.com/Wangnov/codex-app-mirror",
+    "BLOCKED_REFERER_HOSTS": [
+      "dqtx.cc",
+      "opchat.eu.org",
+      "ccwu.cc"
+    ],
+    "BLOCKED_UA_SUBSTRINGS": [
+      "kakou/",
+      "越途ai智枢",
+      "yuetunexus",
+      "funtoolkit/",
+      "nicecodetools",
+      "auto-gateway-codex",
+      "autogateway-desktop",
+      "ccswitchpro-resourceworker",
+      "relayautoconfig",
+      "relayassistant",
+      "yaoyao-chatgpt",
+      "yaoyao-claude",
+      "codexdownloadproxy",
+      "yihaogpt-tools",
+      "hermes-cron",
+      "tianyulink-installer",
+      "pojiamanager"
+    ],
     "ROUTE_CONFIG": {
       "aliases": {
         "/latest/win": { "category": "installer", "filename": "Codex-Windows-x64.msix", "contentType": "application/vnd.ms-appx" },
@@ -39,6 +69,10 @@
     {
       "binding": "DOWNLOAD_ANALYTICS",
       "dataset": "codex_mirror_downloads"
+    },
+    {
+      "binding": "ABUSE_ANALYTICS",
+      "dataset": "codex_mirror_abuse"
     }
   ]
 }
